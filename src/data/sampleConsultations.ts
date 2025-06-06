@@ -36,7 +36,7 @@ export const sampleConsultations: SampleConsultation[] = [
       { speaker: "Patient", text: "That sounds good. Should I continue with the home monitoring?" },
       { speaker: "Doctor", text: "Yes, please continue twice daily readings. Any other questions for me?" },
       { speaker: "Patient", text: "No, I think that covers everything. Thank you, Doctor." },
-      { speaker: "Doctor", text: "You're welcome. Remember: consistent medication, low salt diet, and regular exercise. See you in a month." }
-    ]
+      /**{ speaker: "Doctor", text: "You're welcome. Remember: consistent medication, low salt diet, and regular exercise. See you in a month." }
+    **/]
   }
 ];

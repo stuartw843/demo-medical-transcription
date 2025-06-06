@@ -15,6 +15,13 @@
   "dependencies": {
     "@speechmatics/auth": "^0.0.1",
     "@speechmatics/real-time-client": "^5.0.6",
+    "@tiptap/extension-color": "^2.12.0",
+    "@tiptap/extension-list-item": "^2.12.0",
+    "@tiptap/extension-text-align": "^2.12.0",
+    "@tiptap/extension-text-style": "^2.12.0",
+    "@tiptap/pm": "^2.12.0",
+    "@tiptap/react": "^2.12.0",
+    "@tiptap/starter-kit": "^2.12.0",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",

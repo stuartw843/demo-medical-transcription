@@ -3,8 +3,9 @@ import OpenAI from 'openai';
 import { io, Socket } from 'socket.io-client';
 import TranscriptionPanel from './components/TranscriptionPanel';
 import RecordingControls from './components/RecordingControls';
-import AIAnalysis from './components/AIAnalysis';
+import EnhancedMedicalEditor from './components/EnhancedMedicalEditor';
 import { sampleConsultations } from './data/sampleConsultations';
+import { Speaker } from './components/SettingsModal';
 
 let openai: OpenAI;
 try {
@@ -40,6 +41,7 @@ function App() {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<string>('');
   const [selectedConsultation, setSelectedConsultation] = useState<string>('');
+  const [selectedDoctor, setSelectedDoctor] = useState<Speaker | null>(null);
   
   const socketRef = useRef<Socket | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -60,6 +62,7 @@ function App() {
       setError('Failed to access audio devices');
     }
   };
+
 
   // Monitor analysis state changes
   useEffect(() => {
@@ -276,14 +279,15 @@ Keep each section under 150 words. Prioritize actionable clinical information.`
           const reader = new FileReader();
           reader.onloadend = () => {
             socketRef.current?.emit('audioData', { 
-              audio: reader.result 
+              audio: reader.result,
+              doctorSpeakerIdentifier: selectedDoctor?.speaker_identifier
             });
           };
           reader.readAsDataURL(event.data);
         }
       };
 
-      recorder.start(1000); // Collect data every second
+      recorder.start(100); // Collect data every 100ms for lower latency
       mediaRecorderRef.current = recorder;
       setIsRecording(true);
       if (!selectedConsultation) {
@@ -306,6 +310,7 @@ Keep each section under 150 words. Prioritize actionable clinical information.`
       generateAnalysis(transcript);
     }
   }, [transcript, generateAnalysis]);
+
 
   return (
     <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
@@ -330,13 +335,24 @@ Keep each section under 150 words. Prioritize actionable clinical information.`
           sampleConsultations={sampleConsultations}
           selectedConsultation={selectedConsultation}
           onConsultationSelect={setSelectedConsultation}
+          onDoctorSelect={setSelectedDoctor}
         />
 
         <div className={`grid grid-cols-1 ${(analysis || isAnalyzing) ? 'lg:grid-cols-2' : ''} gap-6 lg:gap-8`}>
           <TranscriptionPanel 
             transcript={partialSegment ? [...transcript, partialSegment] : transcript}
           />
-          {(analysis || isAnalyzing) && <AIAnalysis analysis={analysis} isLoading={isAnalyzing} />}
+          {(analysis || isAnalyzing) && (
+            <EnhancedMedicalEditor 
+              analysis={analysis} 
+              isLoading={isAnalyzing} 
+              selectedDevice={selectedDevice}
+              realTimeTranscript={partialSegment ? [...transcript, partialSegment] : transcript}
+              isMainRecording={isRecording}
+              devices={devices}
+              partialSegment={partialSegment}
+            />
+          )}
         </div>
       </div>
     </div>

@@ -5,7 +5,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { RealtimeClient, RealtimeMessage, RealtimeServerMessage } from '@speechmatics/real-time-client';
 
-let url = "wss://preview2.rt.speechmatics.com/v2";  
+let url = "wss://preview.rt.speechmatics.com/v2";  
 
 interface TranscriptResult {
   alternatives: Array<{ 
@@ -20,6 +20,8 @@ interface TranscriptMessage extends RealtimeMessage {
   message: 'AddTranscript' | 'AddPartialTranscript';
   results: TranscriptResult[];
 }
+
+
 import { createSpeechmaticsJWT } from '@speechmatics/auth';
 
 dotenv.config();
@@ -37,28 +39,81 @@ const io = new Server(httpServer, {
 
 io.on('connection', (socket) => {
   console.log('Client connected');
-  let client: RealtimeClient | null = null;
-  let isConnected = false;
-  let currentSpeaker = '';
-  let currentText = '';
-  const speakerTexts = new Map<string, string>();
+  
+  // Store multiple clients for different sessions
+  const clients = new Map<string, {
+    client: RealtimeClient | null;
+    isConnected: boolean;
+    isConnecting: boolean;
+    currentSpeaker: string;
+    currentText: string;
+    speakerTexts: Map<string, string>;
+  }>();
+  
+  const getSession = (sessionId: string = 'default') => {
+    if (!clients.has(sessionId)) {
+      clients.set(sessionId, {
+        client: null,
+        isConnected: false,
+        isConnecting: false,
+        currentSpeaker: '',
+        currentText: '',
+        speakerTexts: new Map<string, string>()
+      });
+    }
+    return clients.get(sessionId)!;
+  };
+
+  const cleanupClient = (sessionId: string = 'default') => {
+    const session = clients.get(sessionId);
+    if (session?.client) {
+      try {
+        // Don't wait for stopRecognition as it causes timeouts
+        session.client.stopRecognition().catch(() => {
+          // Ignore timeout errors
+        });
+      } catch (error) {
+        // Ignore cleanup errors
+      }
+      session.client = null;
+      session.isConnected = false;
+      session.isConnecting = false;
+      session.currentSpeaker = '';
+      session.currentText = '';
+      session.speakerTexts.clear();
+    }
+  };
 
   socket.on('audioData', async (data) => {
     try {
-      if (!client) {
+      const sessionId = data.sessionId || 'default';
+      const doctorSpeakerIdentifier = data.doctorSpeakerIdentifier;
+      const session = getSession(sessionId);
+      
+      if (!session.client && !session.isConnecting) {
+        session.isConnecting = true;
         const apiKey = process.env.SPEECHMATICS_API_KEY;
         if (!apiKey) {
           throw new Error('SPEECHMATICS_API_KEY not set');
         }
 
         if(url != ""){
-          client = new RealtimeClient({url:url});
+          session.client = new RealtimeClient({url:url});
         }
         else{
-          client = new RealtimeClient();
+          session.client = new RealtimeClient();
         }
 
-        client.addEventListener('receiveMessage', (evt: MessageEvent<RealtimeServerMessage>) => {
+        // Add connection event listeners
+        session.client.addEventListener('receiveMessage', (evt: MessageEvent<RealtimeServerMessage>) => {
+          // Mark as connected when we receive the first message
+          if (!session.isConnected && evt.data.message === 'RecognitionStarted') {
+            session.isConnected = true;
+            session.isConnecting = false;
+            console.log(`Speechmatics connection fully established for session: ${sessionId}`);
+            return;
+          }
+
           if (evt.data.message !== 'AddTranscript' && evt.data.message !== 'AddPartialTranscript') {
             return;
           }
@@ -79,48 +134,49 @@ io.on('connection', (socket) => {
 
           if (messageData.message === 'AddPartialTranscript') {
             // Only update UI with partial if same speaker
-            if (speaker === currentSpeaker || !currentSpeaker) {
+            if (speaker === session.currentSpeaker || !session.currentSpeaker) {
               const segment = {
                 speaker,
-                text: (currentText + (currentText && !formattedText.match(/^[.,?!]/) ? ' ' : '') + formattedText).trim(),
+                text: (session.currentText + (session.currentText && !formattedText.match(/^[.,?!]/) ? ' ' : '') + formattedText).trim(),
                 timestamp: new Date().toLocaleTimeString()
               };
-              socket.emit('transcription', { segment, isPartial: true });
+              socket.emit('transcription', { segment, isPartial: true, sessionId });
             }
           } else if (messageData.message === 'AddTranscript') {
             // If speaker changes, emit current segment and start new one
-            if (speaker !== currentSpeaker && currentText) {
-              console.log(`Speaker changed from ${currentSpeaker} to ${speaker}`);
+            if (speaker !== session.currentSpeaker && session.currentText) {
+              console.log(`[${sessionId}] Speaker changed from ${session.currentSpeaker} to ${speaker}`);
               const segment = {
-                speaker: currentSpeaker,
-                text: currentText.trim(),
+                speaker: session.currentSpeaker,
+                text: session.currentText.trim(),
                 timestamp: new Date().toLocaleTimeString()
               };
-              socket.emit('transcription', { segment, isPartial: false });
-              currentText = formattedText;
+              socket.emit('transcription', { segment, isPartial: false, sessionId });
+              session.currentText = formattedText;
             } else {
-              currentText = currentText ? currentText + (formattedText.match(/^[.,?!]/) ? '' : ' ') + formattedText : formattedText;
+              session.currentText = session.currentText ? session.currentText + (formattedText.match(/^[.,?!]/) ? '' : ' ') + formattedText : formattedText;
             }
             // Log if this is the first speaker detection
-            if (!currentSpeaker && speaker) {
-              console.log(`Initial speaker detected: ${speaker}`);
+            if (!session.currentSpeaker && speaker) {
+              console.log(`[${sessionId}] Initial speaker detected: ${speaker}`);
             }
-            currentSpeaker = speaker;
+            session.currentSpeaker = speaker;
 
             // Emit complete segment if it ends with punctuation
-            if (/[.!?]$/.test(currentText)) {
+            if (/[.!?]$/.test(session.currentText)) {
               const segment = {
-                speaker: currentSpeaker,
-                text: currentText.trim(),
+                speaker: session.currentSpeaker,
+                text: session.currentText.trim(),
                 timestamp: new Date().toLocaleTimeString()
               };
-              socket.emit('transcription', { segment, isPartial: false });
-              currentText = '';
-              console.log(`Speaker ${currentSpeaker} segment completed due to punctuation`);
-              currentSpeaker = '';
+              socket.emit('transcription', { segment, isPartial: false, sessionId });
+              session.currentText = '';
+              console.log(`[${sessionId}] Speaker ${session.currentSpeaker} segment completed due to punctuation`);
+              session.currentSpeaker = '';
             }
           }
         });
+
 
         try {
           const jwt = await createSpeechmaticsJWT({
@@ -129,32 +185,51 @@ io.on('connection', (socket) => {
             ttl: 60, // 1 minute
           });
 
-          await client.start(jwt, {
-            transcription_config: {
-              language: 'en',
-              operating_point: 'enhanced',
-              enable_partials: true,
-              diarization: 'speaker',
-              max_delay: 1.2
+          // Build transcription config with optional doctor speaker identifier
+          const transcriptionConfig: any = {
+            language: 'en',
+            operating_point: 'enhanced',
+            enable_partials: true,
+            diarization: 'speaker',
+            max_delay: 1.5,
+            conversation_config: {
+              end_of_utterance_silence_trigger: 0.5
             }
-          });
+          };
+
+          // Add doctor speaker identifier if provided
+          if (doctorSpeakerIdentifier) {
+            transcriptionConfig.speaker_diarization_config = {
+              speakers: {
+                "Doctor": [doctorSpeakerIdentifier]
+              }
+            };
+            console.log(`[${sessionId}] Using doctor speaker identifier: ${doctorSpeakerIdentifier}`);
+          }
+
+          await session.client.start(jwt, { transcription_config: transcriptionConfig });
           
-          isConnected = true;
-          console.log('Speechmatics connection established');
+          console.log(`Speechmatics connection initiated for session: ${sessionId}`);
         } catch (error) {
-          console.error('Connection error:', error);
-          socket.emit('error', { message: 'Connection error with speech service' });
-          throw error;
+          console.error(`Connection error for session ${sessionId}:`, error);
+          cleanupClient(sessionId);
+          socket.emit('error', { message: 'Connection error with speech service', sessionId });
+          return;
         }
       }
 
       // Wait for connection before sending audio
-      if (!isConnected) {
-        console.log('Waiting for Speechmatics connection...');
-        await new Promise<void>((resolve) => {
+      if (!session.isConnected) {
+        console.log(`Waiting for Speechmatics connection for session: ${sessionId}...`);
+        const maxWaitTime = 10000; // 10 seconds
+        const startTime = Date.now();
+        
+        await new Promise<void>((resolve, reject) => {
           const checkConnection = () => {
-            if (isConnected) {
+            if (session.isConnected) {
               resolve();
+            } else if (Date.now() - startTime > maxWaitTime) {
+              reject(new Error('Connection timeout'));
             } else {
               setTimeout(checkConnection, 100);
             }
@@ -165,72 +240,79 @@ io.on('connection', (socket) => {
 
       // Convert base64 audio to buffer and send to Speechmatics
       const audioBuffer = Buffer.from(data.audio.split(',')[1], 'base64');
-      if (client && isConnected) {
-        await client.sendAudio(audioBuffer);
+      if (session.client && session.isConnected) {
+        await session.client.sendAudio(audioBuffer);
       } else {
         throw new Error('Speech service not connected');
       }
 
     } catch (error) {
-      console.error('Error processing audio:', error);
-      socket.emit('error', { message: 'Error processing audio' });
+      console.error(`Error processing audio for session ${data.sessionId || 'default'}:`, error);
+      cleanupClient(data.sessionId || 'default');
+      socket.emit('error', { message: 'Error processing audio', sessionId: data.sessionId || 'default' });
     }
   });
 
-  socket.on('stopRecording', async () => {
-    if (client) {
+  socket.on('stopRecording', async (data) => {
+    const sessionId = data?.sessionId || 'default';
+    const session = clients.get(sessionId);
+    
+    if (session?.client) {
       try {
         // Emit any remaining text before stopping
-        if (currentText) {
+        if (session.currentText) {
           const segment = {
-            speaker: currentSpeaker,
-            text: currentText.trim()
+            speaker: session.currentSpeaker,
+            text: session.currentText.trim()
               .replace(/\s*([.,?!])\s*/g, '$1')
               .replace(/([.,?!])(?=.)/g, '$1 ')
               .trim(),
             timestamp: new Date().toLocaleTimeString()
           };
-          socket.emit('transcription', { segment, isPartial: false });
+          socket.emit('transcription', { segment, isPartial: false, sessionId });
         }
         
-        if (currentSpeaker) {
-          console.log(`Speaker ${currentSpeaker} session ended due to stop recording`);
+        if (session.currentSpeaker) {
+          console.log(`[${sessionId}] Speaker ${session.currentSpeaker} session ended due to stop recording`);
         }
-        await client.stopRecognition();
-        client = null;
-        currentSpeaker = '';
-        currentText = '';
-        speakerTexts.clear();
+        
+        // Clean up without waiting for EndOfTranscript
+        cleanupClient(sessionId);
       } catch (error) {
-        console.error('Error stopping recognition:', error);
+        console.error(`Error stopping recognition for session ${sessionId}:`, error);
+        cleanupClient(sessionId);
       }
     }
   });
 
   socket.on('disconnect', () => {
     console.log('Client disconnected');
-    if (client) {
-      if (currentText) {
-        const segment = {
-          speaker: currentSpeaker,
-            text: currentText.trim()
-            .replace(/\s*([.,?!])\s*/g, '$1')
-            .replace(/([.,?!])(?=.)/g, '$1 ')
-            .trim(),
-          timestamp: new Date().toLocaleTimeString()
-        };
-        socket.emit('transcription', { segment, isPartial: false });
+    
+    // Clean up all sessions for this socket
+    for (const [sessionId, session] of clients.entries()) {
+      if (session.client) {
+        if (session.currentText) {
+          const segment = {
+            speaker: session.currentSpeaker,
+              text: session.currentText.trim()
+              .replace(/\s*([.,?!])\s*/g, '$1')
+              .replace(/([.,?!])(?=.)/g, '$1 ')
+              .trim(),
+            timestamp: new Date().toLocaleTimeString()
+          };
+          socket.emit('transcription', { segment, isPartial: false, sessionId });
+        }
+        
+        if (session.currentSpeaker) {
+          console.log(`[${sessionId}] Speaker ${session.currentSpeaker} session ended due to disconnect`);
+        }
+        
+        // Clean up without waiting
+        cleanupClient(sessionId);
       }
-      
-      if (currentSpeaker) {
-        console.log(`Speaker ${currentSpeaker} session ended due to disconnect`);
-      }
-      client.stopRecognition().catch(console.error);
-      client = null;
-      currentSpeaker = '';
-      currentText = '';
-      speakerTexts.clear();
     }
+    
+    clients.clear();
   });
 });
 
