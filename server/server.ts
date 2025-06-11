@@ -38,7 +38,6 @@ const io = new Server(httpServer, {
 });
 
 io.on('connection', (socket) => {
-  console.log('Client connected');
   
   // Store multiple clients for different sessions
   const clients = new Map<string, {
@@ -110,7 +109,6 @@ io.on('connection', (socket) => {
           if (!session.isConnected && evt.data.message === 'RecognitionStarted') {
             session.isConnected = true;
             session.isConnecting = false;
-            console.log(`Speechmatics connection fully established for session: ${sessionId}`);
             return;
           }
 
@@ -126,7 +124,16 @@ io.on('connection', (socket) => {
 
           if (!text) return;
 
-          const speaker = messageData.results[0]?.alternatives[0]?.speaker || 'S1';
+          const rawSpeaker = messageData.results[0]?.alternatives[0]?.speaker;
+          // Convert speaker labels from S1, S2, etc. to Patient-1, Patient-2, etc.
+          // But preserve other labels like "Doctor" unchanged
+          // If no speaker detected, default to 'Patient-1'
+          const speaker = !rawSpeaker 
+            ? 'Patient-1'
+            : /^S\d+$/.test(rawSpeaker) 
+              ? rawSpeaker.replace(/^S(\d+)$/, 'Patient-$1')
+              : rawSpeaker;
+
           const formattedText = text
             .replace(/\s*([.,?!])\s*/g, '$1')
             .replace(/([.,?!])(?=.)/g, '$1 ')
@@ -145,7 +152,6 @@ io.on('connection', (socket) => {
           } else if (messageData.message === 'AddTranscript') {
             // If speaker changes, emit current segment and start new one
             if (speaker !== session.currentSpeaker && session.currentText) {
-              console.log(`[${sessionId}] Speaker changed from ${session.currentSpeaker} to ${speaker}`);
               const segment = {
                 speaker: session.currentSpeaker,
                 text: session.currentText.trim(),
@@ -155,10 +161,6 @@ io.on('connection', (socket) => {
               session.currentText = formattedText;
             } else {
               session.currentText = session.currentText ? session.currentText + (formattedText.match(/^[.,?!]/) ? '' : ' ') + formattedText : formattedText;
-            }
-            // Log if this is the first speaker detection
-            if (!session.currentSpeaker && speaker) {
-              console.log(`[${sessionId}] Initial speaker detected: ${speaker}`);
             }
             session.currentSpeaker = speaker;
 
@@ -171,7 +173,6 @@ io.on('connection', (socket) => {
               };
               socket.emit('transcription', { segment, isPartial: false, sessionId });
               session.currentText = '';
-              console.log(`[${sessionId}] Speaker ${session.currentSpeaker} segment completed due to punctuation`);
               session.currentSpeaker = '';
             }
           }
@@ -204,12 +205,9 @@ io.on('connection', (socket) => {
                 "Doctor": [doctorSpeakerIdentifier]
               }
             };
-            console.log(`[${sessionId}] Using doctor speaker identifier: ${doctorSpeakerIdentifier}`);
           }
 
           await session.client.start(jwt, { transcription_config: transcriptionConfig });
-          
-          console.log(`Speechmatics connection initiated for session: ${sessionId}`);
         } catch (error) {
           console.error(`Connection error for session ${sessionId}:`, error);
           cleanupClient(sessionId);
@@ -220,7 +218,6 @@ io.on('connection', (socket) => {
 
       // Wait for connection before sending audio
       if (!session.isConnected) {
-        console.log(`Waiting for Speechmatics connection for session: ${sessionId}...`);
         const maxWaitTime = 10000; // 10 seconds
         const startTime = Date.now();
         
@@ -272,10 +269,6 @@ io.on('connection', (socket) => {
           socket.emit('transcription', { segment, isPartial: false, sessionId });
         }
         
-        if (session.currentSpeaker) {
-          console.log(`[${sessionId}] Speaker ${session.currentSpeaker} session ended due to stop recording`);
-        }
-        
         // Clean up without waiting for EndOfTranscript
         cleanupClient(sessionId);
       } catch (error) {
@@ -286,8 +279,6 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    console.log('Client disconnected');
-    
     // Clean up all sessions for this socket
     for (const [sessionId, session] of clients.entries()) {
       if (session.client) {
@@ -301,10 +292,6 @@ io.on('connection', (socket) => {
             timestamp: new Date().toLocaleTimeString()
           };
           socket.emit('transcription', { segment, isPartial: false, sessionId });
-        }
-        
-        if (session.currentSpeaker) {
-          console.log(`[${sessionId}] Speaker ${session.currentSpeaker} session ended due to disconnect`);
         }
         
         // Clean up without waiting

@@ -13,7 +13,6 @@ try {
     apiKey: import.meta.env.VITE_OPENAI_API_KEY,
     dangerouslyAllowBrowser: true
   });
-  console.log('OpenAI client initialized with key:', import.meta.env.VITE_OPENAI_API_KEY ? 'Present' : 'Missing');
 } catch (error) {
   console.error('Error initializing OpenAI client:', error);
 }
@@ -64,10 +63,6 @@ function App() {
   };
 
 
-  // Monitor analysis state changes
-  useEffect(() => {
-    console.log('Analysis state changed:', { analysis, isAnalyzing });
-  }, [analysis, isAnalyzing]);
 
   useEffect(() => {
     getDevices();
@@ -107,8 +102,6 @@ function App() {
         .map(segment => `${segment.speaker}: ${segment.text}`)
         .join('\n');
 
-      console.log('Sending transcript:', transcriptText);
-      console.log('Using OpenAI key:', import.meta.env.VITE_OPENAI_API_KEY?.substring(0, 10) + '...');
       const completion = await openai.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: [
@@ -182,11 +175,8 @@ Keep each section under 150 words. Prioritize actionable clinical information.`
         });
         throw error;
       });
-
-      console.log('OpenAI response:', completion);
       const response = completion.choices[0]?.message?.content;
       if (response) {
-        console.log('Raw OpenAI response:', response);
         // Parse the response into sections
         // Split response into sections and parse
         const sections = {
@@ -242,7 +232,6 @@ Keep each section under 150 words. Prioritize actionable clinical information.`
           }
         }
 
-        console.log('Parsed sections:', sections);
         setAnalysis(sections);
       }
     } catch (error) {
@@ -351,6 +340,7 @@ Keep each section under 150 words. Prioritize actionable clinical information.`
               isMainRecording={isRecording}
               devices={devices}
               partialSegment={partialSegment}
+              selectedDoctor={selectedDoctor}
             />
           )}
         </div>

@@ -23,3 +23,17 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Python files (if not needed)
+*.py
+__pycache__/
+*.pyc
+
+# Voice/speaker data files
+voices.json
+voices.txt

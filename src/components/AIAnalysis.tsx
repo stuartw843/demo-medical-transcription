@@ -68,11 +68,8 @@ const AIAnalysis: React.FC<AIAnalysisProps> = ({ analysis, isLoading }) => {
   }
 
   if (!analysis) {
-    console.log('AIAnalysis: analysis prop is null');
     return null;
   }
-  
-  console.log('AIAnalysis: Rendering with analysis:', analysis);
 
   const exportToFile = () => {
     if (!analysis) return;

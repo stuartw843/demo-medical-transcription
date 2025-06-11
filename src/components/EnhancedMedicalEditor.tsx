@@ -43,6 +43,8 @@ interface EnhancedMedicalEditorProps {
   isMainRecording?: boolean;
   devices?: MediaDeviceInfo[];
   partialSegment?: SpeechSegment | null;
+  doctorSpeakerId?: string;
+  selectedDoctor?: { id: string; name: string; speaker_identifier: string } | null;
 }
 
 interface EditorState {
@@ -234,8 +236,12 @@ const EnhancedMedicalEditor: React.FC<EnhancedMedicalEditorProps> = ({
   realTimeTranscript = [],
   isMainRecording = false,
   devices = [],
-  partialSegment = null
+  partialSegment = null,
+  doctorSpeakerId = 'S1',
+  selectedDoctor = null
 }) => {
+  // Use the selected doctor's speaker identifier if available, otherwise fall back to doctorSpeakerId
+  const effectiveDoctorSpeakerId = selectedDoctor?.speaker_identifier || doctorSpeakerId;
   const [editorState, setEditorState] = useState<EditorState>({
     subjective: '',
     objective: '',
@@ -258,6 +264,7 @@ const EnhancedMedicalEditor: React.FC<EnhancedMedicalEditorProps> = ({
   const [notesPartialSegment, setNotesPartialSegment] = useState<SpeechSegment | null>(null);
   const [notesFinalSegment, setNotesFinalSegment] = useState<SpeechSegment | null>(null);
   const [isTranscribingPaused, setIsTranscribingPaused] = useState<boolean>(false);
+  const [listenToAllSpeakers, setListenToAllSpeakers] = useState<boolean>(false);
   
   // Track processed segments to prevent duplicates
   const [processedSegmentIds, setProcessedSegmentIds] = useState<Set<string>>(new Set());
@@ -810,10 +817,21 @@ const EnhancedMedicalEditor: React.FC<EnhancedMedicalEditorProps> = ({
     return commands.some(command => text.toLowerCase().includes(command.toLowerCase()));
   }, []);
 
-  // Process real-time transcript for streaming to active section
+  // Process real-time transcript for streaming to active section (Doctor only or all speakers based on toggle)
   useEffect(() => {
     if (realTimeTranscript && realTimeTranscript.length > 0 && isMainRecording && isVoiceInputEnabled) {
       const latestSegment = realTimeTranscript[realTimeTranscript.length - 1];
+      
+      // Only process if this is from the doctor (unless listening to all speakers)
+      // Handle both old format (S1, Doctor) and new format (Patient-1, Doctor)
+      const isDoctorSpeaker = latestSegment.speaker === effectiveDoctorSpeakerId || 
+                             latestSegment.speaker === "Doctor" ||
+                             (effectiveDoctorSpeakerId?.startsWith('S') && latestSegment.speaker === effectiveDoctorSpeakerId.replace(/^S(\d+)$/, 'Patient-$1'));
+      
+      if (!listenToAllSpeakers && !isDoctorSpeaker) {
+        return;
+      }
+      
       const text = latestSegment.text.toLowerCase().trim();
       
       if (voiceMode === 'command') {
@@ -837,12 +855,23 @@ const EnhancedMedicalEditor: React.FC<EnhancedMedicalEditorProps> = ({
         }
       }
     }
-  }, [realTimeTranscript, isMainRecording, isVoiceInputEnabled, voiceMode, isVoiceCommand, handleVoiceCommand, insertText]);
+  }, [realTimeTranscript, isMainRecording, isVoiceInputEnabled, voiceMode, isVoiceCommand, handleVoiceCommand, insertText, effectiveDoctorSpeakerId, listenToAllSpeakers]);
 
-  // Process independent notes recording transcript with duplicate detection
+  // Process independent notes recording transcript with duplicate detection (Doctor only or all speakers based on toggle)
   useEffect(() => {
     if (notesTranscript.length > 0 && isNotesRecording) {
       const latestSegment = notesTranscript[notesTranscript.length - 1];
+      
+      // Only process if this is from the doctor (unless listening to all speakers)
+      // Handle both old format (S1, Doctor) and new format (Patient-1, Doctor)
+      const isDoctorSpeaker = latestSegment.speaker === "Doctor" ||
+                             latestSegment.speaker === effectiveDoctorSpeakerId ||
+                             (effectiveDoctorSpeakerId?.startsWith('S') && latestSegment.speaker === effectiveDoctorSpeakerId.replace(/^S(\d+)$/, 'Patient-$1'));
+      
+      if (!listenToAllSpeakers && !isDoctorSpeaker) {
+        return;
+      }
+      
       const segmentId = `${latestSegment.speaker}-${latestSegment.timestamp}-${latestSegment.text}`;
       
       // Skip if we've already processed this segment
@@ -858,7 +887,6 @@ const EnhancedMedicalEditor: React.FC<EnhancedMedicalEditorProps> = ({
       if (lastProcessedTextRef.current && 
           latestSegment.text.length > 0 && 
           lastProcessedTextRef.current.includes(latestSegment.text.substring(0, Math.min(20, latestSegment.text.length)))) {
-        console.log('Skipping duplicate or contained text:', latestSegment.text);
         return;
       }
       
@@ -886,7 +914,7 @@ const EnhancedMedicalEditor: React.FC<EnhancedMedicalEditorProps> = ({
         }
       }
     }
-  }, [notesTranscript, isNotesRecording, voiceMode, isVoiceCommand, handleVoiceCommand, insertText, processedSegmentIds]);
+  }, [notesTranscript, isNotesRecording, voiceMode, isVoiceCommand, handleVoiceCommand, insertText, processedSegmentIds, effectiveDoctorSpeakerId, listenToAllSpeakers]);
 
   // Process partial segments from independent recording
   useEffect(() => {
@@ -920,7 +948,8 @@ const EnhancedMedicalEditor: React.FC<EnhancedMedicalEditorProps> = ({
           reader.onloadend = () => {
             notesSocketRef.current?.emit('audioData', { 
               audio: reader.result,
-              sessionId: 'medical-notes'
+              sessionId: 'medical-notes',
+              doctorSpeakerIdentifier: effectiveDoctorSpeakerId
             });
           };
           reader.readAsDataURL(event.data);
@@ -1064,6 +1093,24 @@ ${editorState.keyTerms.join('\n')}`;
           
           {/* Enhanced Notes Recording Controls */}
           <div className="flex items-center space-x-3 border-l border-gray-300 pl-4">
+            {/* Speaker Filter Toggle */}
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={() => setListenToAllSpeakers(!listenToAllSpeakers)}
+                className={`px-3 py-2 rounded-md text-sm font-medium transition-colors flex items-center gap-2 ${
+                  listenToAllSpeakers
+                    ? 'bg-blue-500 hover:bg-blue-600 text-white'
+                    : 'bg-gray-200 hover:bg-gray-300 text-gray-700'
+                }`}
+                title={listenToAllSpeakers ? 'Listening to all speakers' : 'Listening to Doctor only'}
+              >
+                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1v-1a1 1 0 001-1v-3a1 1 0 000-2H9z" clipRule="evenodd"/>
+                </svg>
+                {listenToAllSpeakers ? 'All Speakers' : 'Doctor Only'}
+              </button>
+            </div>
+            
             <div className="flex items-center space-x-2">
               {/* Microphone Button with Audio Visualization */}
               <div className="relative">
@@ -1137,27 +1184,11 @@ ${editorState.keyTerms.join('\n')}`;
               title={isVoiceInputEnabled ? 'Disable voice input' : 'Enable voice input for editing'}
             >
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 715 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clipRule="evenodd"/>
+                <path fillRule="evenodd" d="M7 4a3 3 0 616 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 715 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clipRule="evenodd"/>
               </svg>
               {isVoiceInputEnabled ? 'Voice ON' : 'Voice OFF'}
             </button>
           )}
-          <button
-            onClick={undo}
-            disabled={historyIndex <= 0}
-            className="bg-gray-500 hover:bg-gray-600 disabled:bg-gray-300 text-white px-3 py-1 rounded text-sm font-medium transition-colors"
-            title="Undo (Voice: 'undo')"
-          >
-            ↶ Undo
-          </button>
-          <button
-            onClick={redo}
-            disabled={historyIndex >= history.length - 1}
-            className="bg-gray-500 hover:bg-gray-600 disabled:bg-gray-300 text-white px-3 py-1 rounded text-sm font-medium transition-colors"
-            title="Redo (Voice: 'redo')"
-          >
-            ↷ Redo
-          </button>
           <button
             onClick={exportToFile}
             className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors"
@@ -1361,6 +1392,7 @@ ${editorState.keyTerms.join('\n')}`;
       {/* Transcription Overlay */}
       <TranscriptionOverlay
         partialSegment={
+          // Show all speakers in overlay, but only doctor's words go to editor
           partialSegment || 
           notesPartialSegment || 
           (realTimeTranscript && realTimeTranscript.length > 0 && isVoiceInputEnabled
